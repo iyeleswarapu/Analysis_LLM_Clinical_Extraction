@@ -1,0 +1,356 @@
+"""
+Temperature Sensitivity Analysis for LLM Clinical Extraction
+
+This script analyzes JSON outputs from LLM experiments to measure:
+1. JSON validity
+2. Patient-level output disagreement
+3. Temperature sensitivity
+4. Model and prompt-type instability
+5. Temperature contribution to instability
+
+Author: Isha Yeleswarapu
+"""
+
+import pandas as pd
+import json
+import re
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+# ---------------------------------------------------------------------
+# File Paths
+# ---------------------------------------------------------------------
+
+INPUT_FILE = "PATH_TO_INPUT_CSV"
+
+OUTPUT_DIR = "PATH_TO_OUTPUT_DIRECTORY/"
+
+CLEANED_RESULTS = OUTPUT_DIR + "TEST5_Cleaned_Analyzed_Results.csv"
+PATIENT_SUMMARY = OUTPUT_DIR + "TEST5_Patient_Disagreement_Summary.csv"
+GROUP_SUMMARY = OUTPUT_DIR + "TEST5_Temperature_Sensitivity_By_Group.csv"
+OVERALL_SUMMARY = OUTPUT_DIR + "TEST5_Temperature_Overall_Summary.csv"
+INSTABILITY_RESULTS = OUTPUT_DIR + "TEST5_Temperature_Instability_By_Temp.csv"
+TEMP_COMPARISON = OUTPUT_DIR + "TEST5_Temperature_vs_Zero_Disagreement.csv"
+
+LINE_PLOT = OUTPUT_DIR + "TEST5_Temperature_vs_GroupMode_LinePlot_ErrorBars.png"
+HEATMAP = OUTPUT_DIR + "TEST5_Temperature_Sensitivity_Heatmap.png"
+
+
+# ---------------------------------------------------------------------
+# Helper Functions
+# ---------------------------------------------------------------------
+
+def extract_json_block(text):
+    """
+    Extract the first JSON block {...} from model output.
+    Removes reasoning text before or after JSON.
+    """
+    if not isinstance(text, str):
+        return None
+
+    match = re.search(r"\{.*?\}", text, re.DOTALL)
+    return match.group(0) if match else None
+
+
+def safe_json_load(json_string):
+    """Safely parse JSON without crashing."""
+    if not isinstance(json_string, str):
+        return None
+
+    try:
+        return json.loads(json_string)
+    except json.JSONDecodeError:
+        return None
+
+
+def normalize_json(obj):
+    """
+    Normalize JSON for comparison by:
+    - sorting keys
+    - sorting metastatic site lists
+    """
+    if not isinstance(obj, dict):
+        return None
+
+    obj_copy = obj.copy()
+
+    if "metastatic_disease_sites" in obj_copy:
+        if isinstance(obj_copy["metastatic_disease_sites"], list):
+            obj_copy["metastatic_disease_sites"] = sorted(
+                obj_copy["metastatic_disease_sites"]
+            )
+
+    return json.dumps(obj_copy, sort_keys=True)
+
+
+# ---------------------------------------------------------------------
+# Load Data
+# ---------------------------------------------------------------------
+
+print("Loading dataset...")
+
+df = pd.read_csv(INPUT_FILE)
+df = df.applymap(lambda x: x.lower() if isinstance(x, str) else x)
+
+print("Rows loaded:", len(df))
+
+
+# ---------------------------------------------------------------------
+# JSON Extraction + Parsing
+# ---------------------------------------------------------------------
+
+print("Parsing JSON outputs...")
+
+df["clean_json_string"] = df["output"].apply(extract_json_block)
+df["parsed_json"] = df["clean_json_string"].apply(safe_json_load)
+
+df["valid_json"] = df["parsed_json"].notnull()
+
+print("Valid JSON rows:", df["valid_json"].sum())
+print("Invalid JSON rows:", len(df) - df["valid_json"].sum())
+
+df["normalized_output"] = df["parsed_json"].apply(normalize_json)
+
+
+# ---------------------------------------------------------------------
+# Patient-Level Disagreement Analysis
+# ---------------------------------------------------------------------
+
+print("\nRunning patient-level disagreement analysis...")
+
+patient_summary = []
+
+for report_index, group in df.groupby("report_index"):
+
+    outputs = group["normalized_output"].dropna()
+
+    patient_summary.append({
+        "report_index": report_index,
+        "num_runs": len(outputs),
+        "num_unique_outputs": outputs.nunique()
+    })
+
+patient_df = pd.DataFrame(patient_summary)
+
+print("\nUnique outputs per patient:")
+print(patient_df["num_unique_outputs"].value_counts().sort_index())
+
+print(
+    "\nPatients with inconsistent outputs:",
+    (patient_df["num_unique_outputs"] > 1).sum(),
+    "/",
+    len(patient_df)
+)
+
+
+# ---------------------------------------------------------------------
+# Temperature Sensitivity Analysis
+# ---------------------------------------------------------------------
+
+print("\nAnalyzing temperature sensitivity...")
+
+group_cols = ["report_index", "narrative", "model", "prompt_type"]
+
+results = []
+
+for group_keys, group_df in df.groupby(group_cols):
+
+    unique_outputs = group_df["output"].nunique()
+
+    results.append({
+        "report_index": group_keys[0],
+        "narrative": group_keys[1],
+        "model": group_keys[2],
+        "prompt_type": group_keys[3],
+        "n_rows": len(group_df),
+        "n_unique_outputs_across_temps": unique_outputs,
+        "temperature_sensitive": unique_outputs > 1
+    })
+
+summary_df = pd.DataFrame(results)
+
+summary_df.to_csv(GROUP_SUMMARY, index=False)
+
+
+# ---------------------------------------------------------------------
+# Overall Statistics
+# ---------------------------------------------------------------------
+
+total_groups = len(summary_df)
+groups_with_change = summary_df["temperature_sensitive"].sum()
+
+percent_changed = 100 * groups_with_change / total_groups
+
+print("\nTotal groups:", total_groups)
+print("Temperature sensitive groups:", groups_with_change)
+print(f"Percent affected: {percent_changed:.2f}%")
+
+
+# ---------------------------------------------------------------------
+# Model and Prompt Type Summaries
+# ---------------------------------------------------------------------
+
+model_summary = (
+    summary_df.groupby("model")["temperature_sensitive"]
+    .mean()
+    .reset_index()
+)
+
+model_summary["percent_temperature_sensitive"] = (
+    model_summary["temperature_sensitive"] * 100
+)
+
+
+prompt_summary = (
+    summary_df.groupby("prompt_type")["temperature_sensitive"]
+    .mean()
+    .reset_index()
+)
+
+prompt_summary["percent_temperature_sensitive"] = (
+    prompt_summary["temperature_sensitive"] * 100
+)
+
+
+model_prompt_summary = (
+    summary_df.groupby(["model", "prompt_type"])["temperature_sensitive"]
+    .mean()
+    .reset_index()
+)
+
+model_prompt_summary["percent_temperature_sensitive"] = (
+    model_prompt_summary["temperature_sensitive"] * 100
+)
+
+
+# ---------------------------------------------------------------------
+# Temperature Instability Analysis
+# ---------------------------------------------------------------------
+
+print("\nAnalyzing instability by temperature...")
+
+group_cols = ["report_index", "model", "prompt_type"]
+
+pivot_df = df.pivot_table(
+    index=group_cols,
+    columns="temperature",
+    values="output",
+    aggfunc="first"
+).reset_index()
+
+temperature_cols = [
+    c for c in pivot_df.columns if c not in group_cols
+]
+
+unstable_mask = pivot_df[temperature_cols].nunique(axis=1) > 1
+unstable_df = pivot_df[unstable_mask]
+
+print("Unstable groups:", len(unstable_df))
+
+
+mode_output = unstable_df[temperature_cols].mode(axis=1)[0]
+
+instability_counts = []
+
+for temp in temperature_cols:
+
+    minority_count = (unstable_df[temp] != mode_output).sum()
+
+    percent = (minority_count / len(unstable_df)) * 100
+
+    instability_counts.append({
+        "temperature": temp,
+        "percent_of_instability": percent
+    })
+
+instability_df = pd.DataFrame(instability_counts)
+
+instability_df.to_csv(INSTABILITY_RESULTS, index=False)
+
+
+# ---------------------------------------------------------------------
+# Instability Plot with 95% CI
+# ---------------------------------------------------------------------
+
+instability_df["proportion"] = instability_df["percent_of_instability"] / 100
+
+n = len(unstable_df)
+
+instability_df["se"] = np.sqrt(
+    instability_df["proportion"] *
+    (1 - instability_df["proportion"]) / n
+)
+
+instability_df["ci95"] = 1.96 * instability_df["se"]
+
+instability_df = instability_df.sort_values("temperature")
+
+plt.figure()
+
+plt.errorbar(
+    instability_df["temperature"],
+    instability_df["proportion"],
+    yerr=instability_df["ci95"],
+    marker="o",
+    capsize=5
+)
+
+plt.xlabel("Temperature")
+plt.ylabel("Proportion of Unstable Groups")
+plt.title("Temperature Responsible for Output Instability (95% CI)")
+plt.ylim(0, 1)
+
+plt.tight_layout()
+plt.savefig(LINE_PLOT, dpi=300)
+plt.show()
+
+
+# ---------------------------------------------------------------------
+# Heatmap: Model vs Prompt Type
+# ---------------------------------------------------------------------
+
+heatmap_data = model_prompt_summary.pivot(
+    index="prompt_type",
+    columns="model",
+    values="percent_temperature_sensitive"
+)
+
+plt.figure()
+
+im = plt.imshow(
+    heatmap_data.values,
+    aspect="auto",
+    cmap="cividis"
+)
+
+plt.colorbar(im, label="Percent Temperature Sensitive")
+
+plt.xticks(
+    np.arange(len(heatmap_data.columns)),
+    heatmap_data.columns,
+    rotation=45
+)
+
+plt.yticks(
+    np.arange(len(heatmap_data.index)),
+    heatmap_data.index
+)
+
+plt.xlabel("Model")
+plt.ylabel("Prompt Type")
+plt.title("Temperature Sensitivity by Model and Prompt Type")
+
+plt.tight_layout()
+plt.savefig(HEATMAP, dpi=300)
+plt.show()
+
+
+# ---------------------------------------------------------------------
+# Save Outputs
+# ---------------------------------------------------------------------
+
+patient_df.to_csv(PATIENT_SUMMARY, index=False)
+df.to_csv(CLEANED_RESULTS, index=False)
+
+print("\nAnalysis complete.")
