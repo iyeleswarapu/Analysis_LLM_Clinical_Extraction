@@ -70,8 +70,10 @@ Example model output:
 
 The script produces:
 
-Temperature Instability Plot
+1.) Temperature Instability Plot
+
 Proportion of unstable outputs attributed to each temperature (with 95% confidence intervals).
 
-Model vs Prompt Heatmap
+2.) Model vs Prompt Heatmap
+
 Percentage of temperature-sensitive outputs across model and prompt combinations.
