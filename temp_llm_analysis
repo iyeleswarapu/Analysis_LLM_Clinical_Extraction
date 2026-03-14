@@ -9,6 +9,7 @@ This script analyzes JSON outputs from LLM experiments to measure:
 5. Temperature contribution to instability
 
 Author: Isha Yeleswarapu
+Affiliation: Johns Hopkins University Whiting School of Engineering
 """
 
 import pandas as pd
