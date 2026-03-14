@@ -22,22 +22,27 @@ This project investigates how stochastic decoding affects LLM extraction perform
 
 The script performs several analysis steps:
 
-JSON Parsing
+1.) JSON Parsing
+
 LLM outputs often include reasoning text or formatting inconsistencies.
 The script extracts and safely parses the first JSON block from each output.
 
-Output Normalization
+2.) Output Normalization
+
 To enable consistent comparisons, JSON outputs are normalized by:
 - sorting keys
 - sorting lists of metastatic disease sites
 
-Patient-Level Disagreement
+3.) Patient-Level Disagreement
+
 For each patient report, the analysis counts the number of unique structured outputs generated across runs.
 
-Temperature Sensitivity
+4.) Temperature Sensitivity
+
 For each combination of patient, model, and prompt type, the script determines whether changing temperature alters the model’s prediction.
 
-Instability Attribution
+5.) Instability Attribution
+
 Among inconsistent cases, the analysis identifies which temperatures most frequently produce minority predictions.
 
 **Example Output Format**
